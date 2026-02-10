@@ -332,7 +332,7 @@
       <div class="grid">
         <section class="card">
           <div class="card-header">
-            <span class="card-title">PDF Yükle</span>
+            <span class="card-title">📄 PDF / 🖼️ Resim Yükle</span>
             <span class="pill">Lokal İşlem</span>
           </div>
 
@@ -381,9 +381,9 @@
 
               <div class="upload-actions">
                 <label for="pdf_file" class="file-label">
-                  <span>PDF Seç</span>
+                  <span>📄 PDF veya 🖼️ Resim Seç</span>
                 </label>
-                <input type="file" id="pdf_file" name="pdf_file" accept=".pdf" />
+                <input type="file" id="pdf_file" name="pdf_file" accept=".pdf,.png,.jpg,.jpeg,.webp" />
 
                 <button
                   id="submit-btn"
@@ -407,6 +407,14 @@
               <div class="info-row">
                 <span class="file-name" id="file-name">Dosya seçilmedi</span>
                 <span></span>
+              </div>
+            </div>
+
+            <!-- Önizleme Alanı -->
+            <div id="preview-container" style="display: none; margin-top: 16px; border-top: 1px solid var(--border); padding-top: 16px;">
+              <div style="font-size: 0.85rem; color: var(--muted); margin-bottom: 8px;">📄 Önizleme:</div>
+              <div style="background: var(--bg); border: 1px solid var(--border); border-radius: 8px; overflow: hidden; max-height: 400px; display: flex; align-items: center; justify-content: center;">
+                <img id="preview-image" src="" alt="Önizleme" style="max-width: 100%; max-height: 400px; object-fit: contain;" />
               </div>
             </div>
           </form>
@@ -460,15 +468,85 @@
         if (file) {
           fileNameEl.textContent = file.name;
           submitBtn.disabled = false;
+          
+          // Önizleme göster
+          showPreview(file);
         } else {
-          fileNameEl.textContent = "Henüz dosya seçilmedi";
+          fileNameEl.textContent = "Dosya seçilmedi";
           submitBtn.disabled = true;
+          hidePreview();
         }
       });
+
+      async function showPreview(file) {
+        console.log('[DEBUG] showPreview called, file:', file.name, 'type:', file.type);
+        const previewContainer = document.getElementById("preview-container");
+        const previewImage = document.getElementById("preview-image");
+        
+        // Dosya tipini kontrol et
+        const fileType = file.type;
+        console.log('[DEBUG] File type:', fileType);
+        
+        if (fileType.startsWith('image/')) {
+          console.log('[DEBUG] Image file detected');
+          // Resim dosyası - direkt göster
+          const reader = new FileReader();
+          reader.onload = (e) => {
+            previewImage.src = e.target.result;
+            previewContainer.style.display = "block";
+          };
+          reader.readAsDataURL(file);
+        } else if (fileType === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf')) {
+          console.log('[DEBUG] PDF file detected, fetching preview...');
+          // PDF dosyası - backend'den ilk sayfayı al
+          previewContainer.style.display = "block";
+          previewImage.src = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='200' height='250' viewBox='0 0 200 250'%3E%3Crect width='200' height='250' fill='%23374151'/%3E%3Ctext x='50%25' y='50%25' dominant-baseline='middle' text-anchor='middle' font-family='system-ui' font-size='40' fill='%239ca3af'%3E⏳%3C/text%3E%3Ctext x='50%25' y='70%25' dominant-baseline='middle' text-anchor='middle' font-family='system-ui' font-size='14' fill='%239ca3af'%3EYükleniyor...%3C/text%3E%3C/svg%3E";
+          
+          try {
+            const formData = new FormData();
+            formData.append('pdf_file', file);
+            
+            console.log('[DEBUG] Sending request to /preview-pdf');
+            const response = await fetch('/preview-pdf', {
+              method: 'POST',
+              body: formData
+            });
+            
+            console.log('[DEBUG] Response status:', response.status);
+            const data = await response.json();
+            console.log('[DEBUG] Response data:', data);
+            
+            if (data.success) {
+              console.log('[DEBUG] Preview loaded successfully');
+              previewImage.src = data.image;
+            } else {
+              console.log('[DEBUG] Preview failed:', data.error);
+              // Hata durumunda icon göster
+              previewImage.src = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='200' height='250' viewBox='0 0 200 250'%3E%3Crect width='200' height='250' fill='%23374151'/%3E%3Ctext x='50%25' y='50%25' dominant-baseline='middle' text-anchor='middle' font-family='system-ui' font-size='80' fill='%239ca3af'%3E📄%3C/text%3E%3Ctext x='50%25' y='70%25' dominant-baseline='middle' text-anchor='middle' font-family='system-ui' font-size='16' fill='%239ca3af'%3EPDF%3C/text%3E%3C/svg%3E";
+            }
+          } catch (error) {
+            console.error('PDF preview error:', error);
+            previewImage.src = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='200' height='250' viewBox='0 0 200 250'%3E%3Crect width='200' height='250' fill='%23374151'/%3E%3Ctext x='50%25' y='50%25' dominant-baseline='middle' text-anchor='middle' font-family='system-ui' font-size='80' fill='%239ca3af'%3E📄%3C/text%3E%3Ctext x='50%25' y='70%25' dominant-baseline='middle' text-anchor='middle' font-family='system-ui' font-size='16' fill='%239ca3af'%3EPDF%3C/text%3E%3C/svg%3E";
+          }
+        }
+      }
+
+      function hidePreview() {
+        const previewContainer = document.getElementById("preview-container");
+        const previewImage = document.getElementById("preview-image");
+        previewContainer.style.display = "none";
+        previewImage.src = "";
+      }
 
       form.addEventListener("submit", () => {
         submitBtn.disabled = true;
         submitBtn.textContent = "İşleniyor...";
+        
+        // Önizlemeyi localStorage'a kaydet
+        const previewImage = document.getElementById("preview-image");
+        if (previewImage.src) {
+          localStorage.setItem('ocr_preview', previewImage.src);
+        }
       });
 
       function resetForm() {
@@ -477,6 +555,8 @@
         submitBtn.disabled = true;
         submitBtn.textContent = "OCR Başlat";
         document.getElementById("ocr-text").value = "";
+        hidePreview();
+        localStorage.removeItem('ocr_preview'); // Önizlemeyi temizle
         window.location.href = "{{ url_for('index') }}";
       }
 
@@ -501,6 +581,23 @@
         document.body.removeChild(a);
         URL.revokeObjectURL(url);
       }
+
+      // Sayfa yüklendiğinde önizlemeyi geri yükle (sadece OCR sonrası)
+      window.addEventListener('DOMContentLoaded', () => {
+        const savedPreview = localStorage.getItem('ocr_preview');
+        const hasOcrResult = document.getElementById('ocr-text').value.trim() !== '';
+        
+        // Sadece OCR sonucu varsa önizlemeyi göster
+        if (savedPreview && hasOcrResult) {
+          const previewContainer = document.getElementById("preview-container");
+          const previewImage = document.getElementById("preview-image");
+          previewImage.src = savedPreview;
+          previewContainer.style.display = "block";
+        } else {
+          // İlk açılışta veya OCR sonucu yoksa localStorage'ı temizle
+          localStorage.removeItem('ocr_preview');
+        }
+      });
     </script>
   </body>
 </html>

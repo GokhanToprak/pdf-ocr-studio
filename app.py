@@ -3,7 +3,8 @@ import os
 import tempfile
 from pathlib import Path
 
-from flask import Flask, render_template, request, redirect, url_for, flash, jsonify
+from flask import Flask, render_template, request, redirect, url_for, flash, jsonify, send_file
+from io import BytesIO
 from pdf2image import convert_from_path
 import requests
 
@@ -20,7 +21,7 @@ app.secret_key = os.environ.get("FLASK_SECRET_KEY", "pdf-ocr-studio-secret-key-2
 def pdf_to_images(pdf_path: Path, dpi: int = 100) -> list[Path]:
     """
     Convert a PDF file to a list of PNG image paths (one per page).
-    Düşük DPI = daha hızlı işlem, daha küçük dosyalar
+    DPI 200 = İyi kalite + Makul dosya boyutu
     """
     print(f"[DEBUG] PDF'i resimlere çeviriliyor: {pdf_path} (DPI: {dpi})")
     output_dir = pdf_path.parent / "pages"
@@ -33,8 +34,8 @@ def pdf_to_images(pdf_path: Path, dpi: int = 100) -> list[Path]:
         # Resmi kaydet ve boyutunu logla
         img_path = output_dir / f"page_{i:03d}.png"
         
-        # Eğer resim çok büyükse küçült (max 1600px genişlik)
-        max_width = 1600
+        # Çok büyük resimleri küçült (memory sorunlarını önlemek için)
+        max_width = 2400  # Daha yüksek limit, ama sınırsız değil
         if page.width > max_width:
             ratio = max_width / page.width
             new_height = int(page.height * ratio)
@@ -98,8 +99,8 @@ def ocr_pdf(pdf_path: Path, model_name: str, max_pages: int | None = None) -> st
     for idx, img in enumerate(images, start=1):
         print(f"[DEBUG] Sayfa {idx}/{len(images)} işleniyor...")
         
-        # Basit ve evrensel prompt (tüm modellerle uyumlu)
-        prompt = "Extract all text from this image. Include everything you see."
+        # Daha detaylı prompt - OCR'ı iyileştirir
+        prompt = "Please perform OCR (Optical Character Recognition) on this image. Extract all visible text accurately, preserving the original formatting, line breaks, and structure. Include headers, paragraphs, lists, tables, and any other text content."
         
         try:
             page_text = ocr_image_with_deepseek(img, prompt=prompt, model_name=model_name)
@@ -110,6 +111,23 @@ def ocr_pdf(pdf_path: Path, model_name: str, max_pages: int | None = None) -> st
 
     print(f"[DEBUG] OCR_PDF tamamlandı!")
     return "\n\n".join(all_text)
+
+
+def ocr_single_image(image_path: Path, model_name: str) -> str:
+    """
+    Run OCR on a single image file.
+    """
+    print(f"[DEBUG] OCR_IMAGE başladı: {image_path.name} - Model: {model_name}")
+    
+    prompt = "Please perform OCR (Optical Character Recognition) on this image. Extract all visible text accurately, preserving the original formatting, line breaks, and structure. Include headers, paragraphs, lists, tables, and any other text content."
+    
+    try:
+        text = ocr_image_with_deepseek(image_path, prompt=prompt, model_name=model_name)
+        print(f"[DEBUG] OCR_IMAGE tamamlandı!")
+        return text
+    except Exception as e:
+        print(f"[ERROR] Image OCR hatası: {e}")
+        return f"Error: {e}"
 
 
 def get_available_models():
@@ -146,27 +164,38 @@ def upload_and_ocr():
     print(f"[DEBUG] Seçilen model: {selected_model}")
     
     if "pdf_file" not in request.files:
-        flash("PDF dosyası seçilmedi")
+        flash("Dosya seçilmedi")
         return redirect(url_for("index"))
 
     file = request.files["pdf_file"]
     if file.filename == "":
-        flash("PDF dosyası seçilmedi")
+        flash("Dosya seçilmedi")
         return redirect(url_for("index"))
 
-    if not file.filename.lower().endswith(".pdf"):
-        flash("Sadece PDF dosyaları yüklenebilir")
+    # Dosya türünü kontrol et
+    file_ext = file.filename.lower().split('.')[-1]
+    allowed_extensions = ['pdf', 'png', 'jpg', 'jpeg', 'webp']
+    
+    if file_ext not in allowed_extensions:
+        flash(f"Desteklenen formatlar: {', '.join(allowed_extensions)}")
         return redirect(url_for("index"))
 
-    print(f"[DEBUG] PDF yüklendi: {file.filename}")
-    # Geçici bir klasörde PDF'i sakla
+    print(f"[DEBUG] Dosya yüklendi: {file.filename} (tip: {file_ext})")
+    
+    # Geçici klasörde dosyayı sakla
     with tempfile.TemporaryDirectory() as tmpdir:
-        pdf_path = Path(tmpdir) / file.filename
-        file.save(pdf_path)
-        print(f"[DEBUG] PDF kaydedildi: {pdf_path}")
+        file_path = Path(tmpdir) / file.filename
+        file.save(file_path)
+        print(f"[DEBUG] Dosya kaydedildi: {file_path}")
 
         try:
-            ocr_result = ocr_pdf(pdf_path, model_name=selected_model)
+            # PDF mi resim mi?
+            if file_ext == 'pdf':
+                ocr_result = ocr_pdf(file_path, model_name=selected_model)
+            else:
+                # Resim dosyası
+                ocr_result = ocr_single_image(file_path, model_name=selected_model)
+            
             print(f"[DEBUG] OCR başarılı, toplam {len(ocr_result)} karakter")
         except Exception as e:
             print(f"[ERROR] OCR hatası: {e}")
@@ -181,6 +210,47 @@ def upload_and_ocr():
         available_models=available_models,
         selected_model=selected_model,
     )
+
+
+@app.route("/preview-pdf", methods=["POST"])
+def preview_pdf():
+    """PDF'in ilk sayfasını resim olarak döndür"""
+    if "pdf_file" not in request.files:
+        return jsonify({"error": "Dosya yok"}), 400
+    
+    file = request.files["pdf_file"]
+    if file.filename == "":
+        return jsonify({"error": "Dosya seçilmedi"}), 400
+    
+    # Geçici klasörde PDF'i işle
+    with tempfile.TemporaryDirectory() as tmpdir:
+        pdf_path = Path(tmpdir) / file.filename
+        file.save(pdf_path)
+        
+        try:
+            # Sadece ilk sayfayı dönüştür
+            images = convert_from_path(str(pdf_path), dpi=150, first_page=1, last_page=1)
+            if images:
+                first_page = images[0]
+                
+                # Resmi küçült
+                max_width = 800
+                if first_page.width > max_width:
+                    ratio = max_width / first_page.width
+                    new_height = int(first_page.height * ratio)
+                    first_page = first_page.resize((max_width, new_height))
+                
+                # Base64'e çevir
+                buffered = BytesIO()
+                first_page.save(buffered, format="PNG")
+                img_str = base64.b64encode(buffered.getvalue()).decode()
+                
+                return jsonify({"success": True, "image": f"data:image/png;base64,{img_str}"})
+            else:
+                return jsonify({"error": "PDF sayfa bulunamadı"}), 400
+        except Exception as e:
+            print(f"[ERROR] PDF preview hatası: {e}")
+            return jsonify({"error": str(e)}), 500
 
 
 if __name__ == "__main__":
