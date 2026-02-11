@@ -2,3 +2,4 @@ flask
 pdf2image
 Pillow
 requests
+pytesseract

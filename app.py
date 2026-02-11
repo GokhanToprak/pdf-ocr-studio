@@ -3,10 +3,12 @@ import os
 import tempfile
 from pathlib import Path
 
-from flask import Flask, render_template, request, redirect, url_for, flash, jsonify, send_file
+from flask import Flask, render_template, request, redirect, url_for, flash, jsonify
 from io import BytesIO
 from pdf2image import convert_from_path
 import requests
+import pytesseract
+from PIL import Image
 
 
 OLLAMA_URL = "http://localhost:11434/api/generate"
@@ -103,7 +105,7 @@ def ocr_pdf(pdf_path: Path, model_name: str, max_pages: int | None = None) -> st
         prompt = "Please perform OCR (Optical Character Recognition) on this image. Extract all visible text accurately, preserving the original formatting, line breaks, and structure. Include headers, paragraphs, lists, tables, and any other text content."
         
         try:
-            page_text = ocr_image_with_deepseek(img, prompt=prompt, model_name=model_name)
+            page_text = perform_ocr(img, prompt=prompt, model_name=model_name)
         except Exception as e:
             print(f"[ERROR] Sayfa {idx} hatası: {e}")
             page_text = f"Error on page {idx}: {e}"
@@ -111,6 +113,29 @@ def ocr_pdf(pdf_path: Path, model_name: str, max_pages: int | None = None) -> st
 
     print(f"[DEBUG] OCR_PDF tamamlandı!")
     return "\n\n".join(all_text)
+
+
+def perform_ocr(image_path: Path, prompt: str, model_name: str) -> str:
+    """
+    Dispatch OCR to Tesseract or Ollama based on model name.
+    """
+    if "Tesseract" in model_name:
+        return ocr_with_tesseract(image_path)
+    else:
+        return ocr_image_with_deepseek(image_path, prompt, model_name)
+
+
+def ocr_with_tesseract(image_path: Path, lang: str = "tur+eng") -> str:
+    """
+    Run Tesseract OCR on an image.
+    """
+    print(f"[DEBUG] Tesseract OCR: {image_path.name}")
+    try:
+        text = pytesseract.image_to_string(Image.open(image_path), lang=lang)
+        return text.strip()
+    except Exception as e:
+        print(f"[ERROR] Tesseract hatası: {e}")
+        return f"Error (Tesseract): {e}"
 
 
 def ocr_single_image(image_path: Path, model_name: str) -> str:
@@ -122,7 +147,7 @@ def ocr_single_image(image_path: Path, model_name: str) -> str:
     prompt = "Please perform OCR (Optical Character Recognition) on this image. Extract all visible text accurately, preserving the original formatting, line breaks, and structure. Include headers, paragraphs, lists, tables, and any other text content."
     
     try:
-        text = ocr_image_with_deepseek(image_path, prompt=prompt, model_name=model_name)
+        text = perform_ocr(image_path, prompt=prompt, model_name=model_name)
         print(f"[DEBUG] OCR_IMAGE tamamlandı!")
         return text
     except Exception as e:
@@ -131,16 +156,28 @@ def ocr_single_image(image_path: Path, model_name: str) -> str:
 
 
 def get_available_models():
-    """Ollama'dan mevcut modelleri listele"""
+    """Ollama'dan mevcut modelleri listele ve Tesseract ekle"""
+    models = []
+    
+    # 1. Tesseract
+    models.append("Tesseract (Yerel)")
+    
+    # 2. Ollama Modelleri
     try:
         resp = requests.get(OLLAMA_LIST_URL, timeout=5)
         resp.raise_for_status()
         data = resp.json()
-        models = [m["name"] for m in data.get("models", [])]
-        return models
+        ollama_models = [m["name"] for m in data.get("models", [])]
+        models.extend(ollama_models)
     except Exception as e:
         print(f"[ERROR] Ollama modellerini listelerken hata: {e}")
-        return []
+        # Hata durumunda varsayılan modelleri ekle
+        models.extend(["deepseek-ocr:3b", "glm-ocr:bf16"])
+    
+    if len(models) == 1: # Sadece Tesseract varsa yine varsayılanları ekle (Ollama boş döndüyse)
+         models.extend(["deepseek-ocr:3b", "glm-ocr:bf16"])
+
+    return models
 
 
 @app.route("/", methods=["GET"])
